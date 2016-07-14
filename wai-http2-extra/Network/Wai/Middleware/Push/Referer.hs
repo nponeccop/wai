@@ -9,12 +9,10 @@ module Network.Wai.Middleware.Push.Referer (
   ) where
 
 import Control.Monad (when)
-import Control.Reaper
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as BS
 import Data.ByteString.Internal (ByteString(..), memchr)
-import Data.Map (Map)
-import qualified Data.Map.Strict as M
+import Data.IORef
 import Data.Maybe (isNothing)
 import Data.Set (Set)
 import qualified Data.Set as S
@@ -28,6 +26,8 @@ import Network.Wai
 import Network.Wai.Handler.Warp
 import Network.Wai.Internal (Response(..))
 import System.IO.Unsafe (unsafePerformIO)
+
+import qualified Network.Wai.Middleware.Push.LRU as LRU
 
 -- $setup
 -- >>> :set -XOverloadedStrings
@@ -47,38 +47,28 @@ type MakePushPromise = URLPath  -- ^ path in referer
 -- | Type for URL path.
 type URLPath = ByteString
 
-type Cache = Map URLPath (Set PushPromise)
+type Cache = LRU.LRUCache URLPath (Set PushPromise)
 
 emptyCache :: Cache
-emptyCache = M.empty
+emptyCache = LRU.empty 100 -- fixme
 
-cacheReaper :: Reaper Cache (URLPath,PushPromise)
-cacheReaper = unsafePerformIO $ mkReaper settings
-{-# NOINLINE cacheReaper #-}
-
-settings :: ReaperSettings Cache (URLPath,PushPromise)
-settings = defaultReaperSettings {
-      reaperAction = \_ -> return (\_ -> emptyCache)
-    , reaperCons   = insert
-    , reaperNull   = M.null
-    , reaperEmpty  = emptyCache
---  , reaperDelay  = 30000000 -- FIXME hard-coding
-    }
+lruCache :: IORef Cache
+lruCache = unsafePerformIO $ newIORef emptyCache
+{-# NOINLINE lruCache #-}
 
 insert :: (URLPath,PushPromise) -> Cache -> Cache
-insert (path,pp) m = M.alter ins path m
+insert (path,pp) m = LRU.alter ins path m
   where
-    ins Nothing    = Just $ S.singleton pp
-    ins (Just set) = Just $ S.insert pp set
+    ins Nothing    = (False, Just $! S.singleton pp)
+    ins (Just set) = (True,  Just $! S.insert pp set)
 
 -- | The middleware to push files based on Referer:.
 --   Learning strategy is implemented in the first argument.
---   Learning information is kept for 30 seconds.
 pushOnReferer :: MakePushPromise -> Middleware
 pushOnReferer func app req sendResponse = app req $ \res -> do
     let !path = rawPathInfo req
-    m <- reaperRead cacheReaper
-    case M.lookup path m of
+    cache <- readIORef lruCache
+    case LRU.lookup path cache of
         Nothing -> case requestHeaderReferer req of
             Nothing      -> return ()
             Just referer -> case res of
@@ -90,9 +80,11 @@ pushOnReferer func app req sendResponse = app req $ \res -> do
                             mpp <- func refPath path file
                             case mpp of
                                 Nothing -> return ()
-                                Just pp -> reaperAdd cacheReaper (refPath,pp)
+                                Just pp -> atomicModifyIORef' lruCache $ \c ->
+                                  (insert (refPath,pp) c, ())
                 _ -> return ()
-        Just pset -> do
+        Just (pset,cache') -> do
+            writeIORef lruCache cache'
             let !ps = S.toList pset
                 !h2d = defaultHTTP2Data { http2dataPushPromise = ps}
             setHTTP2Data req (Just h2d)

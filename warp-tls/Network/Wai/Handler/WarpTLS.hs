@@ -142,7 +142,7 @@ defaultTlsSettings = TLSSettings {
   , keyMemory = Nothing
   , onInsecure = DenyInsecure "This server only accepts secure HTTPS connections."
   , tlsLogging = def
-  , tlsAllowedVersions = [TLS.TLS12,TLS.TLS11,TLS.TLS10]
+  , tlsAllowedVersions = [TLS.TLS13,TLS.TLS13ID18,TLS.TLS13ID16,TLS.TLS12,TLS.TLS11,TLS.TLS10]
   , tlsCiphers = ciphers
   , tlsWantClientCert = False
   , tlsServerHooks = def
@@ -152,7 +152,9 @@ defaultTlsSettings = TLSSettings {
 -- taken from stunnel example in tls-extra
 ciphers :: [TLS.Cipher]
 ciphers =
-    [ TLSExtra.cipher_ECDHE_RSA_AES128GCM_SHA256
+    [ TLSExtra.cipher_AES128GCM_SHA256 -- TLS 1.3
+    , TLSExtra.cipher_AES256GCM_SHA384 -- TLS 1.3
+    , TLSExtra.cipher_ECDHE_RSA_AES128GCM_SHA256
     , TLSExtra.cipher_ECDHE_RSA_AES128CBC_SHA256
     , TLSExtra.cipher_ECDHE_RSA_AES128CBC_SHA
     , TLSExtra.cipher_DHE_RSA_AES128GCM_SHA256
@@ -291,6 +293,7 @@ runTLSSocket' tlsset@TLSSettings{..} set credential sock app =
       , TLS.supportedClientInitiatedRenegotiation = False
       , TLS.supportedSession             = True
       , TLS.supportedFallbackScsv        = True
+      , TLS.supportedGroups              = [TLS.X25519,TLS.P256,TLS.P384,TLS.P521]
       }
 
 alpn :: [S.ByteString] -> IO S.ByteString
@@ -426,6 +429,10 @@ getTLSinfo ctx = do
                     TLS.TLS10 -> (3,1)
                     TLS.TLS11 -> (3,2)
                     TLS.TLS12 -> (3,3)
+                    TLS.TLS13ID16 -> (3,4)
+                    TLS.TLS13ID17 -> (3,4)
+                    TLS.TLS13ID18 -> (3,4)
+                    TLS.TLS13     -> (3,4)
             return TLS {
                 tlsMajorVersion = major
               , tlsMinorVersion = minor
